@@ -1,0 +1,7 @@
+{"name": "st", "columns": [{"name": "id", "type": "integer", "is_primary_key": true}, {"name": "name", "type": "text", "is_primary_key": false}, {"name": "gpa", "type": "float", "is_primary_key": false}], "primary_key": "id"}
+[3, "C", 3.0]
+[2, "B", 2.0]
+[1, "Abe", 3.5]
+[5, "E", 5.0]
+[4, "D", 4.44]
+[6, "F", 6.0]
