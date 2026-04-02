@@ -1,3 +1,0 @@
-{"name": "prof", "columns": [{"name": "pname", "type": "text", "is_primary_key": false}, {"name": "ssn", "type": "integer", "is_primary_key": false}], "primary_key": null}
-["ABE", 11]
-["C", 33]

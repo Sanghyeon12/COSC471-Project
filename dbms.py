@@ -285,77 +285,85 @@ class DBMS:
         return tokens
     
     def _eval_condition_tokens(self, tokens, record, schema):
-        """Evaluate tokenized condition"""
+        """Evaluate tokenized condition with AND precedence over OR"""
+
         if not tokens:
             return True
-        
-        # Find logical operators
-        result = True
-        current_op = 'and'
-        i = 0
-        
-        while i < len(tokens):
-            if tokens[i].lower() in ['and', 'or']:
-                current_op = tokens[i].lower()
-                i += 1
-                continue
-            
-            # Parse: attr relop value
-            if i + 2 < len(tokens):
-                attr = tokens[i].lower()
-                relop = tokens[i + 1]
-                value = tokens[i + 2]
-                
-                # Get attribute value from record
-                attr_idx = None
-                for idx, col in enumerate(schema['columns']):
-                    if col['name'].lower() == attr:
-                        attr_idx = idx
-                        break
-                
-                if attr_idx is None:
-                    # Check if it's another attribute name
-                    attr_idx2 = None
-                    for idx, col in enumerate(schema['columns']):
-                        if col['name'].lower() == value.lower():
-                            attr_idx2 = idx
-                            break
-                    
-                    if attr_idx2 is not None:
-                        # Comparing two attributes
-                        val1 = record[attr_idx]
-                        val2 = record[attr_idx2]
-                    else:
-                        raise Exception(f"Unknown attribute: {attr}")
-                else:
-                    val1 = record[attr_idx]
-                    
-                    # Parse value (could be another attribute)
-                    attr_idx2 = None
-                    for idx, col in enumerate(schema['columns']):
-                        if col['name'].lower() == value.lower():
-                            attr_idx2 = idx
-                            break
-                    
-                    if attr_idx2 is not None:
-                        val2 = record[attr_idx2]
-                    else:
-                        # Convert value to appropriate type
-                        val2 = self._parse_value(value, schema['columns'][attr_idx]['type'])
-                
-                # Compare
-                cond_result = self._compare_values(val1, val2, relop)
-                
-                if current_op == 'and':
-                    result = result and cond_result
-                else:
-                    result = result or cond_result
-                
-                i += 3
+
+        # -------------------------------
+        # Helper: evaluate single condition (attr op value)
+        # -------------------------------
+        def eval_simple(expr):
+            attr = expr[0].lower()
+            relop = expr[1]
+            value = expr[2]
+
+            # Find attribute index
+            attr_idx = None
+            for idx, col in enumerate(schema['columns']):
+                if col['name'].lower() == attr:
+                    attr_idx = idx
+                    break
+
+            if attr_idx is None:
+                raise Exception(f"Unknown attribute: {attr}")
+
+            val1 = record[attr_idx]
+
+            # Check if value is another attribute
+            attr_idx2 = None
+            for idx, col in enumerate(schema['columns']):
+                if col['name'].lower() == value.lower():
+                    attr_idx2 = idx
+                    break
+
+            if attr_idx2 is not None:
+                val2 = record[attr_idx2]
             else:
-                break
-        
-        return result
+                val2 = self._parse_value(value, schema['columns'][attr_idx]['type'])
+
+            return self._compare_values(val1, val2, relop)
+
+        # -------------------------------
+        # Step 1: Split by OR
+        # -------------------------------
+        or_parts = []
+        current = []
+
+        for t in tokens:
+            if t.lower() == 'or':
+                or_parts.append(current)
+                current = []
+            else:
+                current.append(t)
+
+        if current:
+            or_parts.append(current)
+
+        # -------------------------------
+        # Step 2: Evaluate each OR block (AND inside)
+        # -------------------------------
+        for part in or_parts:
+            and_result = True
+            i = 0
+
+            while i < len(part):
+                if part[i].lower() == 'and':
+                    i += 1
+                    continue
+
+                expr = part[i:i+3]
+
+                if len(expr) < 3:
+                    break
+
+                and_result = and_result and eval_simple(expr)
+                i += 3
+
+            if and_result:
+                return True
+
+        return False
     
     def _parse_value(self, value_str, data_type):
         """Parse a value string to its appropriate type"""
@@ -561,10 +569,47 @@ class DBMS:
             self._write_output("No database selected")
             return []
         
-        # Handle single table for now
-        if len(table_list) > 1:
-            self._write_output("Error: Multi-table queries not yet implemented")
-            return []
+        # MULTI TABLE SUPPORT
+        all_records = []
+        combined_schema = {'columns': []}
+
+        # Build schemas
+        schemas = []
+        for table_name in table_list:
+            schema = self.databases[self.current_db]['tables'][table_name.lower()]
+            schemas.append(schema)
+            for col in schema['columns']:
+                combined_schema['columns'].append(col)
+
+        # Load records for each table
+        table_records = []
+        for table_name, schema in zip(table_list, schemas):
+            records = self._load_records(table_name, schema)
+            table_records.append(records)
+
+        # Cartesian product
+        def cartesian_product(lists):
+            if not lists:
+                return []
+            result = [[]]
+            for lst in lists:
+                temp = []
+                for r in result:
+                    for item in lst:
+                        temp.append(r + item)
+                result = temp
+            return result
+
+        all_records = cartesian_product(table_records)
+
+        # Apply WHERE condition
+        filtered_records = []
+        for record in all_records:
+            if self._evaluate_condition(condition, record, combined_schema):
+                filtered_records.append(record)
+
+        records = filtered_records
+        schema = combined_schema
         
         table_name = table_list[0]
         table_name_lower = table_name.lower()
@@ -658,6 +703,10 @@ class DBMS:
     def _handle_aggregate(self, aggregate, attr_list, records, schema):
         """Handle aggregate functions"""
         agg_type = aggregate['type']
+        
+        # ensure numeric for avg
+        if agg_type == 'average':
+            values = [float(v) for v in values]
         
         if agg_type == 'count':
             result = len(records)
@@ -895,80 +944,99 @@ class DBMS:
         if not self.current_db:
             self._write_output("No database selected")
             return
-        
-        # Execute the SELECT query
+
         attr_list = select_query['attr_list']
         table_list = select_query['table_list']
         condition = select_query.get('condition')
-        
-        # Verify key attribute is in select list
-        if key_attr.lower() not in [attr.lower() for attr in attr_list] and '*' not in attr_list:
-            self._write_output(f"Error: Key attribute {key_attr} must be in select list")
+
+        # 현재는 single table만 처리 (과제 기준 충분)
+        if len(table_list) != 1:
+            self._write_output("Error: LET supports only one table")
             return
-        
-        # Get source table schema
-        source_table = table_list[0]
-        source_schema = self.databases[self.current_db]['tables'][source_table.lower()]
-        
-        # Load records
-        records = self._load_records(source_table, source_schema, condition)
-        
+
+        source_table = table_list[0].lower()
+
+        if source_table not in self.databases[self.current_db]['tables']:
+            self._write_output(f"Error: Table {source_table} does not exist")
+            return
+
+        source_schema = self.databases[self.current_db]['tables'][source_table]
+
+        # Take SELECT result
+        records = self.select_from(attr_list, table_list, condition)
+
         if not records:
             self._write_output("No records to create table from")
             return
-        
-        # Determine columns for new table
+
+        # set column
         if attr_list == ['*']:
-            selected_cols = source_schema['columns']
+            selected_cols = []
+            for col in source_schema['columns']:
+                selected_cols.append({
+                    'name': col['name'],
+                    'type': col['type'],
+                    'is_primary_key': False
+                })
             selected_indices = list(range(len(selected_cols)))
         else:
             selected_cols = []
             selected_indices = []
+
             for attr in attr_list:
+                found = False
                 for i, col in enumerate(source_schema['columns']):
                     if col['name'].lower() == attr.lower():
-                        selected_cols.append(col.copy())
+                        selected_cols.append({
+                            'name': col['name'],
+                            'type': col['type'],
+                            'is_primary_key': False
+                        })
                         selected_indices.append(i)
+                        found = True
                         break
-        
-        # Find key attribute index in new table
+                if not found:
+                    self._write_output(f"Error: Unknown attribute {attr}")
+                    return
+
+        # KEY attribute check
         key_idx = None
         for i, col in enumerate(selected_cols):
             if col['name'].lower() == key_attr.lower():
-                key_idx = i
                 col['is_primary_key'] = True
+                key_idx = i
                 break
-        
+
         if key_idx is None:
-            self._write_output(f"Error: Key attribute {key_attr} not found")
+            self._write_output(f"Error: Key attribute {key_attr} must be in select list")
             return
-        
-        # Create new table schema
+
+        # new table schema
         new_schema = {
             'name': new_table_name,
             'columns': selected_cols,
-            'primary_key': key_attr
+            'primary_key': selected_cols[key_idx]['name']
         }
-        
-        # Create table file
+
+        # generate file
         table_file = self._get_table_file(self.current_db, new_table_name)
+
         with open(table_file, 'w') as f:
             f.write(json.dumps(new_schema) + '\n')
             for record in records:
-                selected_record = [record[i] for i in selected_indices]
-                f.write(json.dumps(selected_record) + '\n')
-        
-        # Build index
+                f.write(json.dumps(record) + '\n')
+
+        # BST index generate
         bst = BST()
         for pos, record in enumerate(records):
-            selected_record = [record[i] for i in selected_indices]
-            bst.insert(selected_record[key_idx], pos)
+            bst.insert(record[key_idx], pos)
+
         self._save_index(new_table_name, bst)
-        
-        # Update metadata
+
+        # metadata update
         self.databases[self.current_db]['tables'][new_table_name.lower()] = new_schema
         self._save_metadata()
-        
+
         self._write_output(f"Table {new_table_name} created with {len(records)} rows")
 
 
