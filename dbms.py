@@ -9,6 +9,7 @@ import os
 import json
 import pickle
 import re
+import sys
 from typing import Any, List, Dict, Tuple, Optional
 
 
@@ -817,37 +818,30 @@ class DBMS:
             self._write_output(f"AVERAGE({attr_name}): {result}")
             return result
     
-    def update_table(self, table_name, set_clauses, condition=None):            
+    def update_table(self, table_name, set_clauses, condition=None):
         """UPDATE command"""
         if not self.current_db:
             self._write_output("No database selected")
             return
-        
+
         table_name_lower = table_name.lower()
         if table_name_lower not in self.databases[self.current_db]['tables']:
             self._write_output(f"Table {table_name} does not exist")
             return
-        
+
         schema = self.databases[self.current_db]['tables'][table_name_lower]
-        
+
         pk_name = schema['primary_key']
         pk_idx = None
 
-        for i, col in enumerate(schema['columns']):
-            if col['name'] == pk_name:
-                pk_idx = i
-                break
-            
-        if pk_name in set_clauses:
-            new_pk_val = self._parse_value(set_clauses[pk_name], schema['columns'][pk_idx]['type'])
+        if pk_name:
+            for i, col in enumerate(schema['columns']):
+                if col['name'] == pk_name:
+                    pk_idx = i
+                    break
 
-            bst = self._load_index(table_name)
-            if bst.search(new_pk_val) is not None:
-                self._write_output(f"Error: Duplicate primary key value: {new_pk_val}")
-                return
-        
         table_file = self._get_table_file(self.current_db, table_name)
-        
+
         # Load all records
         all_records = []
         with open(table_file, 'r') as f:
@@ -855,13 +849,27 @@ class DBMS:
             for line in f:
                 if line.strip():
                     all_records.append(json.loads(line.strip()))
-        
+
         # Update matching records
         updated_count = 0
         needs_reindex = False
-        
+
         for i, record in enumerate(all_records):
             if self._evaluate_condition(condition, record, schema):
+
+                # PK 중복 체크 — WHERE 조건에 맞는 행에 대해서만, 본인 행 제외
+                if pk_name and pk_name in set_clauses:
+                    new_pk_val = self._parse_value(
+                        set_clauses[pk_name],
+                        schema['columns'][pk_idx]['type']
+                    )
+                    old_pk_val = record[pk_idx]
+                    if new_pk_val != old_pk_val:
+                        bst = self._load_index(table_name)
+                        if bst.search(new_pk_val) is not None:
+                            self._write_output(f"Error: Duplicate primary key value: {new_pk_val}")
+                            return
+
                 # Apply updates
                 for attr, value in set_clauses.items():
                     attr_idx = None
@@ -869,28 +877,27 @@ class DBMS:
                         if col['name'].lower() == attr.lower():
                             attr_idx = j
                             break
-                    
+
                     if attr_idx is not None:
                         parsed_val = self._parse_value(value, schema['columns'][attr_idx]['type'])
-                        
-                        # Check if updating primary key
+
                         if schema['columns'][attr_idx]['is_primary_key']:
                             needs_reindex = True
-                        
+
                         record[attr_idx] = parsed_val
-                
+
                 updated_count += 1
-        
+
         # Write back all records
         with open(table_file, 'w') as f:
             f.write(header)
             for record in all_records:
                 f.write(json.dumps(record) + '\n')
-        
+
         # Rebuild index if needed
         if needs_reindex and schema['primary_key']:
             self._rebuild_index(table_name, schema)
-        
+
         self._write_output(f"{updated_count} row(s) updated")
     
     def delete_from(self, table_name, condition=None):
@@ -1038,10 +1045,13 @@ class DBMS:
         table_list = select_query['table_list']
         condition = select_query.get('condition')
 
-        # ================================
-        # 1. SELECT
-        # ================================
+        import sys, io
+        _stdout = sys.stdout
+        sys.stdout = io.StringIO()        # print 캡처 시작
+
         records = self.select_from(attr_list, table_list, condition)
+
+        sys.stdout = _stdout              # print 복원
 
         if not records:
             self._write_output("No records to create table from")
@@ -1082,7 +1092,7 @@ class DBMS:
                     return
 
         # ================================
-        # 3. KEY
+        # 2. KEY
         # ================================
         key_idx = None
         for i, col in enumerate(selected_cols):
