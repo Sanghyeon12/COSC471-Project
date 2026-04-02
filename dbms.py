@@ -229,7 +229,7 @@ class DBMS:
     
     def _evaluate_condition(self, condition, record, schema):
         """Evaluate a WHERE condition against a record"""
-        if not condition:
+        if condition is None or condition.strip() == "":
             return True
         
         # Parse condition: attr op value [(and|or) attr op value]*
@@ -562,83 +562,133 @@ class DBMS:
             self._save_index(table_name, bst)
         
         self._write_output("1 row inserted")
+        
+    def _extract_pk_condition(self, condition, schema):
+        """WHERE에서 pk = value 형태 추출"""
+        if not condition or not schema['primary_key']:
+            return None
+
+        pk = schema['primary_key'].lower()
+
+        tokens = self._tokenize_condition(condition)
+
+        # 단순 형태만 처리 (id = 3)
+        if len(tokens) == 3:
+            attr, op, value = tokens
+            if attr.lower() == pk and op == '=':
+                return value
+
+        return None
     
     def select_from(self, attr_list, table_list, condition=None, aggregate=None):
         """SELECT command"""
         if not self.current_db:
             self._write_output("No database selected")
             return []
-        
-        # MULTI TABLE SUPPORT
-        all_records = []
-        combined_schema = {'columns': []}
 
-        # Build schemas
-        schemas = []
-        for table_name in table_list:
-            schema = self.databases[self.current_db]['tables'][table_name.lower()]
-            schemas.append(schema)
-            for col in schema['columns']:
-                combined_schema['columns'].append(col)
+        # =========================================================
+        # 1. MULTI TABLE 
+        # =========================================================
+        if len(table_list) > 1:
+            combined_schema = {'columns': []}
+            schemas = []
 
-        # Load records for each table
-        table_records = []
-        for table_name, schema in zip(table_list, schemas):
-            records = self._load_records(table_name, schema)
-            table_records.append(records)
+            # schema 결합
+            for table_name in table_list:
+                schema = self.databases[self.current_db]['tables'][table_name.lower()]
+                schemas.append(schema)
+                for col in schema['columns']:
+                    combined_schema['columns'].append(col)
 
-        # Cartesian product
-        def cartesian_product(lists):
-            if not lists:
+            # Load each tables
+            table_records = []
+            for table_name, schema in zip(table_list, schemas):
+                records = self._load_records(table_name, schema)
+                table_records.append(records)
+
+            # Cartesian Product
+            def cartesian_product(lists):
+                result = [[]]
+                for lst in lists:
+                    temp = []
+                    for r in result:
+                        for item in lst:
+                            temp.append(r + item)
+                    result = temp
+                return result
+
+            all_records = cartesian_product(table_records)
+
+            # apply WHERE
+            records = []
+            for record in all_records:
+                if self._evaluate_condition(condition, record, combined_schema):
+                    records.append(record)
+
+            schema = combined_schema
+
+        # =========================================================
+        # 2. SINGLE TABLE
+        # =========================================================
+        else:
+            table_name = table_list[0]
+            table_name_lower = table_name.lower()
+
+            if table_name_lower not in self.databases[self.current_db]['tables']:
+                self._write_output(f"Table {table_name} does not exist")
                 return []
-            result = [[]]
-            for lst in lists:
-                temp = []
-                for r in result:
-                    for item in lst:
-                        temp.append(r + item)
-                result = temp
-            return result
 
-        all_records = cartesian_product(table_records)
+            schema = self.databases[self.current_db]['tables'][table_name_lower]
 
-        # Apply WHERE condition
-        filtered_records = []
-        for record in all_records:
-            if self._evaluate_condition(condition, record, combined_schema):
-                filtered_records.append(record)
+            pk_value = self._extract_pk_condition(condition, schema)
 
-        records = filtered_records
-        schema = combined_schema
-        
-        table_name = table_list[0]
-        table_name_lower = table_name.lower()
-        
-        if table_name_lower not in self.databases[self.current_db]['tables']:
-            self._write_output(f"Table {table_name} does not exist")
-            return []
-        
-        schema = self.databases[self.current_db]['tables'][table_name_lower]
-        
-        # Load all records
-        records = self._load_records(table_name, schema, condition)
-        
+            if pk_value is not None:
+                # BST search
+                bst = self._load_index(table_name)
+                pos = bst.search(self._parse_value(pk_value, 
+                        next(col['type'] for col in schema['columns'] if col['name'] == schema['primary_key'])
+                ))
+
+                records = []
+
+                if pos is not None:
+                    table_file = self._get_table_file(self.current_db, table_name)
+
+                    with open(table_file, 'r') as f:
+                        f.readline()
+                        all_records = [json.loads(line.strip()) for line in f if line.strip()]
+
+                    if pos < len(all_records):
+                        record = all_records[pos]
+                        if self._evaluate_condition(condition, record, schema):
+                            records.append(record)
+            else:
+                records = self._load_records(table_name, schema, condition)
+
+        # =========================================================
+        # 3. No results
+        # =========================================================
         if not records:
             if not aggregate:
                 self._write_output("Nothing found")
             return []
-        
-        # Handle aggregates
+
+        # =========================================================
+        # 4. Aggregate
+        # =========================================================
         if aggregate:
             return self._handle_aggregate(aggregate, attr_list, records, schema)
-        
-        # Parse attribute list
+
+        # =========================================================
+        # 5. SELECT column
+        # =========================================================
         if attr_list == ['*']:
             selected_indices = list(range(len(schema['columns'])))
             selected_names = [col['name'] for col in schema['columns']]
         else:
             selected_indices = []
             selected_names = []
+
             for attr in attr_list:
                 found = False
                 for i, col in enumerate(schema['columns']):
@@ -647,21 +697,24 @@ class DBMS:
                         selected_names.append(col['name'])
                         found = True
                         break
+
                 if not found:
                     self._write_output(f"Error: Unknown attribute {attr}")
                     return []
-        
-        # Display results
+
+        # =========================================================
+        # 6. print
+        # =========================================================
         header = "\t".join(selected_names)
         self._write_output(header)
         self._write_output("-" * len(header))
-        
+
         result_records = []
         for idx, record in enumerate(records, 1):
             selected_values = [str(record[i]) for i in selected_indices]
             self._write_output(f"{idx}.\t" + "\t".join(selected_values))
             result_records.append([record[i] for i in selected_indices])
-        
+
         return result_records
     
     def _load_records(self, table_name, schema, condition=None):
@@ -702,50 +755,69 @@ class DBMS:
     
     def _handle_aggregate(self, aggregate, attr_list, records, schema):
         """Handle aggregate functions"""
+
         agg_type = aggregate['type']
-        
-        # ensure numeric for avg
-        if agg_type == 'average':
-            values = [float(v) for v in values]
-        
+
+        # =====================================================
+        # COUNT
+        # =====================================================
         if agg_type == 'count':
             result = len(records)
             self._write_output(f"COUNT(*): {result}")
             return result
-        
-        # Get attribute for min/max/average
+
         attr_name = aggregate.get('attr')
         if not attr_name:
             self._write_output("Error: Aggregate requires attribute name")
             return None
-        
-        # Find attribute index
+
+        # attribute index
         attr_idx = None
         for i, col in enumerate(schema['columns']):
             if col['name'].lower() == attr_name.lower():
                 attr_idx = i
                 break
-        
+
         if attr_idx is None:
             self._write_output(f"Error: Unknown attribute {attr_name}")
             return None
-        
-        # Extract values
+
+        # =====================================================
+        # result value
+        # =====================================================
         values = [record[attr_idx] for record in records]
-        
+
+        # =====================================================
+        # MIN
+        # =====================================================
         if agg_type == 'min':
             result = min(values)
             self._write_output(f"MIN({attr_name}): {result}")
+            return result
+
+        # =====================================================
+        # MAX
+        # =====================================================
         elif agg_type == 'max':
             result = max(values)
             self._write_output(f"MAX({attr_name}): {result}")
+            return result
+
+        # =====================================================
+        # AVERAGE
+        # =====================================================
         elif agg_type == 'average':
-            result = sum(values) / len(values)
+            try:
+                numeric_values = [float(v) for v in values]
+            except:
+                self._write_output("Error: Non-numeric values for average")
+                return None
+
+            result = sum(numeric_values) / len(numeric_values)
             self._write_output(f"AVERAGE({attr_name}): {result}")
-        
-        return result
+            return result
     
-    def update_table(self, table_name, set_clauses, condition=None):
+    def update_table(self, table_name, set_clauses, condition=None):            
         """UPDATE command"""
         if not self.current_db:
             self._write_output("No database selected")
@@ -757,6 +829,23 @@ class DBMS:
             return
         
         schema = self.databases[self.current_db]['tables'][table_name_lower]
+        
+        pk_name = schema['primary_key']
+        pk_idx = None
+
+        for i, col in enumerate(schema['columns']):
+            if col['name'] == pk_name:
+                pk_idx = i
+                break
+            
+        if pk_name in set_clauses:
+            new_pk_val = self._parse_value(set_clauses[pk_name], schema['columns'][pk_idx]['type'])
+
+            bst = self._load_index(table_name)
+            if bst.search(new_pk_val) is not None:
+                self._write_output(f"Error: Duplicate primary key value: {new_pk_val}")
+                return
+        
         table_file = self._get_table_file(self.current_db, table_name)
         
         # Load all records
@@ -940,7 +1029,7 @@ class DBMS:
         self._write_output(f"Table {table_name} attributes renamed")
     
     def let_table(self, new_table_name, key_attr, select_query):
-        """LET command"""
+        """LET command (multi-table 지원)"""
         if not self.current_db:
             self._write_output("No database selected")
             return
@@ -949,57 +1038,52 @@ class DBMS:
         table_list = select_query['table_list']
         condition = select_query.get('condition')
 
-        # 현재는 single table만 처리 (과제 기준 충분)
-        if len(table_list) != 1:
-            self._write_output("Error: LET supports only one table")
-            return
-
-        source_table = table_list[0].lower()
-
-        if source_table not in self.databases[self.current_db]['tables']:
-            self._write_output(f"Error: Table {source_table} does not exist")
-            return
-
-        source_schema = self.databases[self.current_db]['tables'][source_table]
-
-        # Take SELECT result
+        # ================================
+        # 1. SELECT
+        # ================================
         records = self.select_from(attr_list, table_list, condition)
 
         if not records:
             self._write_output("No records to create table from")
             return
 
-        # set column
+        source_schemas = []
+        for table in table_list:
+            source_schemas.append(self.databases[self.current_db]['tables'][table.lower()])
+
+        # flatten columns
+        all_columns = []
+        for schema in source_schemas:
+            all_columns.extend(schema['columns'])
+
+        selected_cols = []
+
         if attr_list == ['*']:
-            selected_cols = []
-            for col in source_schema['columns']:
+            for col in all_columns:
                 selected_cols.append({
                     'name': col['name'],
                     'type': col['type'],
                     'is_primary_key': False
                 })
-            selected_indices = list(range(len(selected_cols)))
         else:
-            selected_cols = []
-            selected_indices = []
-
             for attr in attr_list:
                 found = False
-                for i, col in enumerate(source_schema['columns']):
+                for col in all_columns:
                     if col['name'].lower() == attr.lower():
                         selected_cols.append({
                             'name': col['name'],
                             'type': col['type'],
                             'is_primary_key': False
                         })
-                        selected_indices.append(i)
                         found = True
                         break
                 if not found:
                     self._write_output(f"Error: Unknown attribute {attr}")
                     return
 
-        # KEY attribute check
+        # ================================
+        # 3. KEY
+        # ================================
         key_idx = None
         for i, col in enumerate(selected_cols):
             if col['name'].lower() == key_attr.lower():
@@ -1011,14 +1095,12 @@ class DBMS:
             self._write_output(f"Error: Key attribute {key_attr} must be in select list")
             return
 
-        # new table schema
         new_schema = {
             'name': new_table_name,
             'columns': selected_cols,
             'primary_key': selected_cols[key_idx]['name']
         }
 
-        # generate file
         table_file = self._get_table_file(self.current_db, new_table_name)
 
         with open(table_file, 'w') as f:
@@ -1026,19 +1108,16 @@ class DBMS:
             for record in records:
                 f.write(json.dumps(record) + '\n')
 
-        # BST index generate
         bst = BST()
         for pos, record in enumerate(records):
             bst.insert(record[key_idx], pos)
 
         self._save_index(new_table_name, bst)
 
-        # metadata update
         self.databases[self.current_db]['tables'][new_table_name.lower()] = new_schema
         self._save_metadata()
 
         self._write_output(f"Table {new_table_name} created with {len(records)} rows")
-
 
 # ============================================================================
 # Parser
@@ -1480,7 +1559,11 @@ class Parser:
                 # Execute each command
                 for cmd in commands:
                     if cmd:
-                        self.parse(cmd)
+                        try:
+                            self.parse(cmd)
+                        except Exception as e:
+                            self.dbms._write_output(f"Error: {str(e)}")
+                            continue
         except FileNotFoundError:
             self.dbms._write_output(f"Error: File {input_file} not found")
         finally:
