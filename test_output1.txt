@@ -38,11 +38,6 @@ Error: Duplicate primary key value: 2
 Error: Duplicate primary key value: 4
 1 row inserted
 1 row inserted
-name	gpa	ssn
-------------
-1.	Abe	3.5	11
-2.	C	3.0	11
-3.	C	3.0	33
 Table st2 created with 3 rows
 name	gpa	ssn
 ------------
@@ -67,9 +62,9 @@ name	ssn
 name	ssn
 --------
 1.	C	33
-Table student does not exist
-Table student does not exist
-Table student does not exist
+Error: Table student does not exist
+Error: Table student does not exist
+Error: Table student does not exist
 Table third created
 1 row inserted
 1 row inserted
@@ -104,9 +99,9 @@ ssn:		integer	PRIMARY KEY
 THIRD
 x:		integer
 5 row(s) updated
-Table student does not exist
+Error: Table student does not exist
 0 row(s) updated
-Error: Duplicate primary key value: 2
+0 row(s) updated
 name	gpa	id
 -----------
 1.	X	0.0	2
@@ -127,7 +122,7 @@ ST
 x:		integer	PRIMARY KEY
 y:		text
 z:		float
-Error: Unknown attribute gpa
+Error: Unknown attribute: gpa
 Error: Unknown attribute: id
 Error: Unknown attribute: id
 Error: Unknown attribute: id

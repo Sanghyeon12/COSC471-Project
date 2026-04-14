@@ -582,32 +582,32 @@ class DBMS:
         return None
     
     def select_from(self, attr_list, table_list, condition=None, aggregate=None):
-        """SELECT command"""
+        
+        # Sentinel result for early-exit error paths
+        def _err(msg):
+            return {'records': [], 'column_names': [], 'aggregate': None,
+                    'error': msg, 'empty': False}
+
         if not self.current_db:
-            self._write_output("No database selected")
-            return []
+            return _err("No database selected")
 
         # =========================================================
-        # 1. MULTI TABLE 
+        # 1. MULTI TABLE (Cartesian product)
         # =========================================================
         if len(table_list) > 1:
             combined_schema = {'columns': []}
             schemas = []
 
-            # schema 결합
             for table_name in table_list:
                 schema = self.databases[self.current_db]['tables'][table_name.lower()]
                 schemas.append(schema)
                 for col in schema['columns']:
                     combined_schema['columns'].append(col)
 
-            # Load each tables
             table_records = []
             for table_name, schema in zip(table_list, schemas):
-                records = self._load_records(table_name, schema)
-                table_records.append(records)
+                table_records.append(self._load_records(table_name, schema))
 
-            # Cartesian Product
             def cartesian_product(lists):
                 result = [[]]
                 for lst in lists:
@@ -620,11 +620,10 @@ class DBMS:
 
             all_records = cartesian_product(table_records)
 
-            # apply WHERE
-            records = []
-            for record in all_records:
-                if self._evaluate_condition(condition, record, combined_schema):
-                    records.append(record)
+            records = [
+                record for record in all_records
+                if self._evaluate_condition(condition, record, combined_schema)
+            ]
 
             schema = combined_schema
 
@@ -636,29 +635,26 @@ class DBMS:
             table_name_lower = table_name.lower()
 
             if table_name_lower not in self.databases[self.current_db]['tables']:
-                self._write_output(f"Table {table_name} does not exist")
-                return []
+                return _err(f"Table {table_name} does not exist")
 
             schema = self.databases[self.current_db]['tables'][table_name_lower]
 
             pk_value = self._extract_pk_condition(condition, schema)
 
             if pk_value is not None:
-                # BST search
                 bst = self._load_index(table_name)
-                pos = bst.search(self._parse_value(pk_value, 
-                        next(col['type'] for col in schema['columns'] if col['name'] == schema['primary_key'])
+                pos = bst.search(self._parse_value(
+                    pk_value,
+                    next(col['type'] for col in schema['columns']
+                         if col['name'] == schema['primary_key'])
                 ))
 
                 records = []
-
                 if pos is not None:
                     table_file = self._get_table_file(self.current_db, table_name)
-
                     with open(table_file, 'r') as f:
                         f.readline()
                         all_records = [json.loads(line.strip()) for line in f if line.strip()]
-
                     if pos < len(all_records):
                         record = all_records[pos]
                         if self._evaluate_condition(condition, record, schema):
@@ -670,18 +666,22 @@ class DBMS:
         # 3. No results
         # =========================================================
         if not records:
-            if not aggregate:
-                self._write_output("Nothing found")
-            return []
+            return {'records': [], 'column_names': [], 'aggregate': None,
+                    'error': None, 'empty': True}
 
         # =========================================================
-        # 4. Aggregate
+        # 4. Aggregate — delegate, return aggregate result dict
         # =========================================================
         if aggregate:
-            return self._handle_aggregate(aggregate, attr_list, records, schema)
+            agg_result = self._compute_aggregate(aggregate, attr_list, records, schema)
+            if agg_result[0] == "Error":
+                return _err(agg_result[1])
+            label, value = agg_result
+            return {'records': [], 'column_names': [], 'aggregate': {'label': label, 'value': value},
+                    'error': None, 'empty': False}
 
         # =========================================================
-        # 5. SELECT column
+        # 5. Project selected columns
         # =========================================================
         if attr_list == ['*']:
             selected_indices = list(range(len(schema['columns'])))
@@ -689,7 +689,6 @@ class DBMS:
         else:
             selected_indices = []
             selected_names = []
-
             for attr in attr_list:
                 found = False
                 for i, col in enumerate(schema['columns']):
@@ -698,25 +697,42 @@ class DBMS:
                         selected_names.append(col['name'])
                         found = True
                         break
-
                 if not found:
-                    self._write_output(f"Error: Unknown attribute {attr}")
-                    return []
+                    return _err(f"Unknown attribute: {attr}")
 
-        # =========================================================
-        # 6. print
-        # =========================================================
+        result_records = [
+            [record[i] for i in selected_indices]
+            for record in records
+        ]
+
+        return {'records': result_records, 'column_names': selected_names,
+                'aggregate': None, 'error': None, 'empty': False}
+
+    def print_select_result(self, result, aggregate=None):
+        
+        if result['error']:
+            self._write_output(f"Error: {result['error']}")
+            return
+
+        if result['empty']:
+            self._write_output("Nothing found")
+            return
+
+        # Aggregate path
+        if result['aggregate']:
+            label = result['aggregate']['label']
+            value = result['aggregate']['value']
+            self._write_output(f"{label}: {value}")
+            return
+
+        # Regular rows
+        selected_names = result['column_names']
         header = "\t".join(selected_names)
         self._write_output(header)
         self._write_output("-" * len(header))
 
-        result_records = []
-        for idx, record in enumerate(records, 1):
-            selected_values = [str(record[i]) for i in selected_indices]
-            self._write_output(f"{idx}.\t" + "\t".join(selected_values))
-            result_records.append([record[i] for i in selected_indices])
-
-        return result_records
+        for idx, row in enumerate(result['records'], 1):
+            self._write_output(f"{idx}.\t" + "\t".join(str(v) for v in row))
     
     def _load_records(self, table_name, schema, condition=None):
         """Load records from table file"""
@@ -754,25 +770,26 @@ class DBMS:
         
         return records
     
-    def _handle_aggregate(self, aggregate, attr_list, records, schema):
-        """Handle aggregate functions"""
+    def _compute_aggregate(self, aggregate, attr_list, records, schema):
+        """
+        Compute an aggregate function over records.
 
+        Returns (label, value) on success, or None on error.
+        Never prints anything — all output is the caller's responsibility.
+        """
         agg_type = aggregate['type']
 
         # =====================================================
         # COUNT
         # =====================================================
         if agg_type == 'count':
-            result = len(records)
-            self._write_output(f"COUNT(*): {result}")
-            return result
+            return (f"COUNT(*)", len(records))
 
         attr_name = aggregate.get('attr')
         if not attr_name:
-            self._write_output("Error: Aggregate requires attribute name")
             return None
 
-        # attribute index
+        # Resolve attribute index
         attr_idx = None
         for i, col in enumerate(schema['columns']):
             if col['name'].lower() == attr_name.lower():
@@ -780,29 +797,21 @@ class DBMS:
                 break
 
         if attr_idx is None:
-            self._write_output(f"Error: Unknown attribute {attr_name}")
-            return None
+            return (f"Error", f"Unknown attribute: {attr_name}")
 
-        # =====================================================
-        # result value
-        # =====================================================
         values = [record[attr_idx] for record in records]
 
         # =====================================================
         # MIN
         # =====================================================
         if agg_type == 'min':
-            result = min(values)
-            self._write_output(f"MIN({attr_name}): {result}")
-            return result
+            return (f"MIN({attr_name})", min(values))
 
         # =====================================================
         # MAX
         # =====================================================
         elif agg_type == 'max':
-            result = max(values)
-            self._write_output(f"MAX({attr_name}): {result}")
-            return result
+            return (f"MAX({attr_name})", max(values))
 
         # =====================================================
         # AVERAGE
@@ -810,13 +819,11 @@ class DBMS:
         elif agg_type == 'average':
             try:
                 numeric_values = [float(v) for v in values]
-            except:
-                self._write_output("Error: Non-numeric values for average")
-                return None
+            except Exception:
+                return ("Error", "Non-numeric values for average")
+            return (f"AVERAGE({attr_name})", sum(numeric_values)/len(numeric_values))
 
-            result = sum(numeric_values) / len(numeric_values)
-            self._write_output(f"AVERAGE({attr_name}): {result}")
-            return result
+        return ("Error", f"Unsupported aggregate: {agg_type}")
     
     def update_table(self, table_name, set_clauses, condition=None):
         """UPDATE command"""
@@ -1036,7 +1043,7 @@ class DBMS:
         self._write_output(f"Table {table_name} attributes renamed")
     
     def let_table(self, new_table_name, key_attr, select_query):
-        """LET command (multi-table 지원)"""
+        """LET command — creates a new table from a SELECT result."""
         if not self.current_db:
             self._write_output("No database selected")
             return
@@ -1045,23 +1052,27 @@ class DBMS:
         table_list = select_query['table_list']
         condition = select_query.get('condition')
 
-        import sys, io
-        _stdout = sys.stdout
-        sys.stdout = io.StringIO()        # print 캡처 시작
+        # Use select_from as a pure data function — no printing involved
+        result = self.select_from(attr_list, table_list, condition)
 
-        records = self.select_from(attr_list, table_list, condition)
+        if result['error']:
+            self._write_output(result['error'])
+            return
 
-        sys.stdout = _stdout              # print 복원
+        records = result['records']
 
         if not records:
             self._write_output("No records to create table from")
             return
 
-        source_schemas = []
-        for table in table_list:
-            source_schemas.append(self.databases[self.current_db]['tables'][table.lower()])
+        # ================================
+        # 1. Build column schema for new table
+        # ================================
+        source_schemas = [
+            self.databases[self.current_db]['tables'][table.lower()]
+            for table in table_list
+        ]
 
-        # flatten columns
         all_columns = []
         for schema in source_schemas:
             all_columns.extend(schema['columns'])
@@ -1092,7 +1103,7 @@ class DBMS:
                     return
 
         # ================================
-        # 2. KEY
+        # 2. Mark KEY attribute
         # ================================
         key_idx = None
         for i, col in enumerate(selected_cols):
@@ -1111,6 +1122,9 @@ class DBMS:
             'primary_key': selected_cols[key_idx]['name']
         }
 
+        # ================================
+        # 3. Write table file and BST index
+        # ================================
         table_file = self._get_table_file(self.current_db, new_table_name)
 
         with open(table_file, 'w') as f:
@@ -1393,7 +1407,10 @@ class Parser:
         
         self.expect(';')
         
-        self.dbms.select_from(attr_list, table_list, condition, aggregate)
+        self.dbms.print_select_result(
+            self.dbms.select_from(attr_list, table_list, condition, aggregate),
+            aggregate=aggregate,
+        )
     
     def parse_update(self):
         """Parse UPDATE command"""

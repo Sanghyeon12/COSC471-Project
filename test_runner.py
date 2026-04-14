@@ -4,10 +4,9 @@ def run_test(input_file, output_file=None):
     dbms = DBMS()
     parser = Parser(dbms)
 
-    # OUTPUT 파일 설정
     if output_file:
         dbms.output_file = output_file
-        open(output_file, 'w').close()  # 초기화
+        open(output_file, 'w').close()
 
     with open(input_file, 'r') as f:
         content = f.read()
@@ -30,7 +29,7 @@ def run_test(input_file, output_file=None):
     # 실행
     for cmd in commands:
         if cmd:
-            print(f"\n>>> {cmd}")  # 어떤 쿼리인지 표시
+            print(f"\n>>> {cmd}")
             try:
                 parser.parse(cmd)
             except Exception as e:
