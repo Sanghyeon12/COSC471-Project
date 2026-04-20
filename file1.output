@@ -1,0 +1,128 @@
+Database university created
+Using database university
+Table x created
+Table student created
+Nothing found
+
+STUDENT
+a:		text
+Error: Expected KEY, got select
+Error: Expected 2 attribute names
+Error: Expected 1 values, got 6
+Error: Expected 1 values, got 6
+0 row(s) updated
+0 row(s) updated
+0 row(s) updated
+0 row(s) updated
+Table student deleted
+Table x deleted
+Database y does not exist
+Error: Invalid CREATE command
+Error: Expected FROM, got student
+Error: Expected FROM, got ;
+Error: Expected ), got None
+Error: Expected ), got id
+Error: Expected ;, got None
+Error: Expected (, got )
+Database db3 created
+Using database db3
+Table st created
+Table prof created
+1 row inserted
+1 row inserted
+1 row inserted
+Error: Duplicate primary key value: 2
+1 row inserted
+1 row inserted
+1 row inserted
+Error: Duplicate primary key value: 4
+1 row inserted
+1 row inserted
+Table st2 created with 3 rows
+name	gpa	ssn
+------------
+1.	C	3.0	11
+2.	C	3.0	33
+Nothing found
+Nothing found
+Nothing found
+name	gpa	ssn
+------------
+1.	Abe	3.5	11
+2.	C	3.0	33
+name	ssn
+--------
+1.	C	33
+name	ssn
+--------
+1.	Abe	11
+2.	B	11
+3.	B	33
+4.	C	33
+name	ssn
+--------
+1.	C	33
+Error: Table student does not exist
+Error: Table student does not exist
+Error: Table student does not exist
+Table third created
+1 row inserted
+1 row inserted
+name	ssn	x
+----------
+1.	Abe	11	1
+1 row(s) deleted
+1 row(s) deleted
+ssn
+---
+1.	11
+Nothing found
+
+PROF
+pname:		text
+ssn:		integer
+
+ST
+id:		integer	PRIMARY KEY
+name:		text
+gpa:		float
+
+PROF
+pname:		text
+ssn:		integer
+
+ST2
+name:		text
+gpa:		float
+ssn:		integer	PRIMARY KEY
+
+THIRD
+x:		integer
+5 row(s) updated
+Error: Table student does not exist
+0 row(s) updated
+0 row(s) updated
+name	gpa	id
+-----------
+1.	X	0.0	2
+2.	X	0.0	3
+3.	X	0.0	4
+4.	X	0.0	5
+5.	X	0.0	6
+Table st attributes renamed
+y	z
+---
+1.	X	0.0
+2.	X	0.0
+3.	X	0.0
+4.	X	0.0
+5.	X	0.0
+
+ST
+x:		integer	PRIMARY KEY
+y:		text
+z:		float
+Error: Unknown attribute: gpa
+Error: Unknown attribute: id
+Error: Unknown attribute: id
+Error: Unknown attribute: id

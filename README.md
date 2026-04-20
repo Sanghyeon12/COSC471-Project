@@ -212,19 +212,18 @@ Or run with output:
 INPUT test_commands.sql OUTPUT results.txt;
 ```
 
-## Requirements Met
+## Requirement Mapping
 
-✅ Recursive descent parsing  
-✅ Each table in separate file with header  
-✅ Binary Search Tree indexing for primary keys  
-✅ All primary key searches use BST  
-✅ In-order traversal for non-key searches on indexed tables  
-✅ Persistent storage (data saved on exit, loaded on start)  
-✅ All 11 commands implemented  
-✅ Aggregate functions (COUNT, MIN, MAX, AVERAGE) for graduate credit  
-✅ Case-insensitive grammar and comparisons  
-✅ Multi-line command support  
-✅ INPUT/OUTPUT file processing  
+This implementation satisfies the project requirements as follows:
+
+- Separate table files with header → Each table stored as `.tbl` with JSON schema header
+- Binary Search Tree index → Implemented in BST class, stored in `.idx` files
+- Primary key search uses index → Direct BST lookup used in SELECT when condition is pk = value
+- Non-key search on indexed tables → Uses in-order traversal of BST
+- Recursive descent parser → Implemented in Parser class
+- Input file processing → INPUT command reads and executes file line-by-line
+- Output redirection → OUTPUT option writes results to file
+- Persistent storage → Data stored on disk and reloaded on startup
 
 ## Implementation Notes
 
